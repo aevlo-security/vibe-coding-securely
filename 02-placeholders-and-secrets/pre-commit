@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Paths that hold security-sensitive code. Adjust for your repo.
+SENSITIVE_PATHS='auth|payment|billing|permission|access'
+
+# Placeholders: TODO/FIXME, or a bare `return true` / `=> true` that ends a
+# statement (`;`, `}`, `)`, `,`, a comment, or end of line). Catches one-liners
+# like `function isAuthorized() { return true; }` and `() => true` without
+# flagging `return trueCount;` or `x => trueish`.
+PLACEHOLDER_PATTERN='TODO|FIXME|(return[[:space:]]+|=>[[:space:]]*\(?[[:space:]]*)true[[:space:]]*\)?[[:space:]]*([;},)]|//|#|$)'
+
+# Common secret patterns. A backstop, not a replacement for a dedicated secret scanner.
+SECRET_PATTERN="AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(api[_-]?key|secret|token|passw(or)?d)[[:space:]]*[:=][[:space:]]*[\"'][^\"']{8,}"
+
+fail=0
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+
+# 1. Block .env files (allows .env.example)
+if echo "$staged" | grep -E '(^|/)\.env(\..+)?$' | grep -vq '\.example$'; then
+  echo "Blocked: a .env file is staged. Add it to .gitignore."
+  fail=1
+fi
+
+# 2. Block placeholders in security-sensitive files
+sensitive=$(echo "$staged" | grep -Ei "$SENSITIVE_PATHS" || true)
+if [ -n "$sensitive" ]; then
+  if git diff --cached -U0 -- $sensitive | grep -E '^\+[^+]' \
+     | grep -Ei -e "$PLACEHOLDER_PATTERN"; then
+    echo "Blocked: placeholder or hardcoded return in security-sensitive code."
+    fail=1
+  fi
+fi
+
+# 3. Block likely secrets in any added line
+if git diff --cached -U0 | grep -E '^\+[^+]' | grep -Ei -e "$SECRET_PATTERN"; then
+  echo "Blocked: possible secret in staged changes."
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "Commit blocked. Fix the issues above. If it's a false positive, adjust the patterns in this hook."
+  exit 1
+fi
